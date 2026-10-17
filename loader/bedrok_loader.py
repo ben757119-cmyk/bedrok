@@ -1,6 +1,7 @@
-"""bedROK Loader — clean dark injector with auto Minecraft detect (Windows x64)."""
+"""bedROK Loader — minimal dark injector, auto-find Minecraft (Windows x64)."""
 from __future__ import annotations
 
+import glob
 import os
 import queue
 import subprocess
@@ -20,7 +21,6 @@ try:
 except ImportError as e:
     raise SystemExit("pip install pywin32") from e
 
-# --- Win32 ---
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
@@ -44,21 +44,19 @@ PROCESS_ALL = (
     | win32con.PROCESS_VM_READ
 )
 
-MC_NAMES = (
-    "minecraft.windows.exe",
-    "minecraft.exe",
-    "minecraftbedrock.exe",
-)
+# Palette — deep black + soft violet (client-style)
+BG = "#09090b"
+SURFACE = "#111114"
+SURFACE2 = "#18181b"
+LINE = "#27272a"
+ACCENT = "#a78bfa"
+ACCENT2 = "#8b5cf6"
+TEXT = "#fafafa"
+DIM = "#71717a"
+GOOD = "#34d399"
+BAD = "#f87171"
 
-BG = "#0b0d12"
-PANEL = "#12151c"
-BORDER = "#1e2430"
-ACCENT = "#5b8cff"
-ACCENT_HOVER = "#7aa2ff"
-TEXT = "#e8eaed"
-MUTED = "#8b93a7"
-OK = "#3dd68c"
-ERR = "#ff6b6b"
+MC_NAMES = ("minecraft.windows.exe", "minecraft.exe", "minecraftbedrock.exe")
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -76,7 +74,7 @@ class PROCESSENTRY32W(ctypes.Structure):
     ]
 
 
-def enable_debug_privilege() -> str:
+def enable_debug_privilege() -> None:
     try:
         tok = win32security.OpenProcessToken(
             win32api.GetCurrentProcess(),
@@ -87,9 +85,8 @@ def enable_debug_privilege() -> str:
             tok, False, [(pid, win32security.SE_PRIVILEGE_ENABLED)]
         )
         win32api.CloseHandle(tok)
-        return "ok"
-    except Exception as e:
-        return str(e)
+    except Exception:
+        pass
 
 
 def list_processes() -> list[tuple[int, str]]:
@@ -110,8 +107,7 @@ def list_processes() -> list[tuple[int, str]]:
 
 
 def find_minecraft() -> tuple[int, str] | None:
-    """Prefer Minecraft.Windows.exe, then other MC names."""
-    found: list[tuple[int, str]] = []
+    found = []
     for pid, name in list_processes():
         low = name.lower()
         if low in MC_NAMES or "minecraft" in low:
@@ -126,12 +122,11 @@ def find_minecraft() -> tuple[int, str] | None:
 
 def default_dll_path() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    for c in (
         os.path.join(here, "bedrok.dll"),
         os.path.join(os.getcwd(), "bedrok.dll"),
         os.path.join(here, "..", "dll", "build", "Release", "bedrok.dll"),
-    ]
-    for c in candidates:
+    ):
         p = os.path.normpath(c)
         if os.path.isfile(p):
             return p
@@ -139,39 +134,26 @@ def default_dll_path() -> str:
 
 
 def try_launch_minecraft() -> str:
-    """Best-effort launch of Bedrock via shell / known paths."""
-    # Xbox / Store app user model id style launch
-    cmds = [
+    for cmd in (
         ["explorer.exe", "shell:AppsFolder\\Microsoft.MinecraftUWP_8wekyb3d8bbwe!App"],
         ["cmd", "/c", "start", "minecraft:"],
-    ]
-    paths = [
-        os.path.expandvars(
-            r"%ProgramFiles%\WindowsApps\Microsoft.MinecraftUWP*\Minecraft.Windows.exe"
-        ),
-        os.path.expandvars(
-            r"%LOCALAPPDATA%\Packages\Microsoft.MinecraftUWP_8wekyb3d8bbwe"
-        ),
-    ]
-    for cmd in cmds:
+    ):
         try:
             subprocess.Popen(cmd, shell=False)
-            return "Launch requested (Store / protocol)"
+            return "Launching Minecraft…"
         except Exception:
             continue
-    for pattern in paths:
-        # glob light
-        import glob
-
+    for pattern in (
+        os.path.expandvars(r"%ProgramFiles%\WindowsApps\Microsoft.MinecraftUWP*\Minecraft.Windows.exe"),
+    ):
         for p in glob.glob(pattern):
-            exe = p if p.lower().endswith(".exe") else None
-            if exe and os.path.isfile(exe):
+            if os.path.isfile(p):
                 try:
-                    subprocess.Popen([exe])
-                    return f"Started {exe}"
+                    subprocess.Popen([p])
+                    return "Launching Minecraft…"
                 except Exception:
                     pass
-    return "Could not auto-launch — open Minecraft Bedrock manually"
+    return "Open Minecraft manually"
 
 
 def inject(pid: int, dll_path: str) -> str:
@@ -187,248 +169,237 @@ def inject(pid: int, dll_path: str) -> str:
     try:
         data = (dll_path + "\0").encode("utf-16-le")
         remote = win32process.VirtualAllocEx(
-            hp,
-            0,
-            len(data),
+            hp, 0, len(data),
             win32con.MEM_COMMIT | win32con.MEM_RESERVE,
             win32con.PAGE_READWRITE,
         )
         win32process.WriteProcessMemory(hp, remote, data)
-        ht, _tid = win32process.CreateRemoteThread(hp, None, 0, load, remote, 0)
+        ht, _ = win32process.CreateRemoteThread(hp, None, 0, load, remote, 0)
         win32event.WaitForSingleObject(ht, 15000)
         code = win32process.GetExitCodeThread(ht)
         win32api.CloseHandle(ht)
         if code == 0:
-            raise OSError("LoadLibrary returned 0 — wrong arch, path, or blocked")
-        return f"Injected into PID {pid}\nModule base: {code:#x}\n{dll_path}"
+            raise OSError("LoadLibrary failed (arch / path / access)")
+        return f"OK  ·  PID {pid}  ·  {code:#x}"
     finally:
         win32api.CloseHandle(hp)
 
 
-class PillButton(tk.Canvas):
-    def __init__(self, master, text, command, primary=True, **kw):
-        super().__init__(master, height=44, highlightthickness=0, bg=BG, **kw)
-        self.command = command
-        self.primary = primary
-        self.text = text
-        self.enabled = True
-        self.bind("<Button-1>", self._click)
-        self.bind("<Enter>", self._enter)
-        self.bind("<Leave>", self._leave)
-        self._draw(False)
-
-    def _draw(self, hover: bool):
-        self.delete("all")
-        w = int(self.winfo_width() or 200)
-        h = 44
-        if self.primary:
-            fill = ACCENT_HOVER if hover and self.enabled else ACCENT
-            if not self.enabled:
-                fill = "#2a3344"
-            fg = "#0b0d12" if self.enabled else MUTED
-        else:
-            fill = "#1a2030" if hover else PANEL
-            fg = TEXT if self.enabled else MUTED
-        self.create_rectangle(0, 0, w, h, fill=fill, outline=BORDER if not self.primary else fill)
-        self.create_text(w // 2, h // 2, text=self.text, fill=fg, font=("Segoe UI Semibold", 11))
-
-    def _click(self, _e=None):
-        if self.enabled and self.command:
-            self.command()
-
-    def _enter(self, _e=None):
-        self._draw(True)
-
-    def _leave(self, _e=None):
-        self._draw(False)
-
-    def set_enabled(self, on: bool):
-        self.enabled = on
-        self._draw(False)
-
-    def set_text(self, t: str):
-        self.text = t
-        self._draw(False)
+def round_rect(c: tk.Canvas, x1, y1, x2, y2, r, **kw):
+    points = [
+        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+    ]
+    return c.create_polygon(points, smooth=True, **kw)
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("bedROK")
-        self.geometry("420x520")
-        self.minsize(400, 480)
+        self.geometry("380x460")
         self.configure(bg=BG)
         self.resizable(False, False)
+        try:
+            self.attributes("-alpha", 0.98)
+        except Exception:
+            pass
 
         self.q: queue.Queue = queue.Queue()
         self.mc_pid: int | None = None
         self.mc_name: str | None = None
-        self.dll = tk.StringVar(value=default_dll_path())
+        self.dll_path = default_dll_path()
+        self._busy = False
 
-        # Header
-        header = tk.Frame(self, bg=BG)
-        header.pack(fill=tk.X, padx=28, pady=(28, 8))
+        # —— header ——
+        top = tk.Frame(self, bg=BG)
+        top.pack(fill=tk.X, padx=32, pady=(36, 0))
+
         tk.Label(
-            header, text="bedROK", bg=BG, fg=TEXT, font=("Segoe UI", 22, "bold")
-        ).pack(anchor=tk.W)
+            top, text="bedROK", bg=BG, fg=TEXT,
+            font=("Segoe UI", 26, "bold"),
+        ).pack(anchor="w")
         tk.Label(
-            header,
-            text="Minecraft Bedrock companion",
-            bg=BG,
-            fg=MUTED,
+            top, text="bedrock companion", bg=BG, fg=DIM,
             font=("Segoe UI", 10),
-        ).pack(anchor=tk.W, pady=(2, 0))
+        ).pack(anchor="w", pady=(0, 4))
 
-        # Status card
-        card = tk.Frame(self, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
-        card.pack(fill=tk.X, padx=28, pady=12)
+        # accent line
+        line = tk.Canvas(self, height=2, bg=BG, highlightthickness=0)
+        line.pack(fill=tk.X, padx=32, pady=(20, 24))
+        line.create_rectangle(0, 0, 80, 2, fill=ACCENT, outline="")
 
-        inner = tk.Frame(card, bg=PANEL)
-        inner.pack(fill=tk.X, padx=16, pady=14)
+        # —— status row ——
+        status = tk.Frame(self, bg=SURFACE, highlightthickness=0)
+        status.pack(fill=tk.X, padx=32)
 
-        tk.Label(inner, text="TARGET", bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(
-            anchor=tk.W
+        # fake rounded via padding frame
+        sf = tk.Frame(status, bg=SURFACE)
+        sf.pack(fill=tk.X, padx=1, pady=1)
+
+        row = tk.Frame(sf, bg=SURFACE)
+        row.pack(fill=tk.X, padx=18, pady=16)
+
+        self.dot = tk.Canvas(row, width=10, height=10, bg=SURFACE, highlightthickness=0)
+        self.dot.pack(side=tk.LEFT)
+        self._set_dot(DIM)
+
+        self.status_lbl = tk.Label(
+            row, text="Waiting for Minecraft", bg=SURFACE, fg=TEXT,
+            font=("Segoe UI", 11), anchor="w",
         )
-        self.mc_label = tk.Label(
-            inner,
-            text="Searching…",
-            bg=PANEL,
-            fg=TEXT,
-            font=("Segoe UI Semibold", 12),
-            anchor=tk.W,
+        self.status_lbl.pack(side=tk.LEFT, padx=(10, 0), fill=tk.X, expand=True)
+
+        self.pid_lbl = tk.Label(
+            row, text="", bg=SURFACE, fg=DIM, font=("Segoe UI", 9),
         )
-        self.mc_label.pack(fill=tk.X, pady=(2, 10))
+        self.pid_lbl.pack(side=tk.RIGHT)
 
-        tk.Label(inner, text="DLL", bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(
-            anchor=tk.W
+        # —— dll path (minimal) ——
+        dll_f = tk.Frame(self, bg=BG)
+        dll_f.pack(fill=tk.X, padx=32, pady=(18, 0))
+        tk.Label(dll_f, text="DLL", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(anchor="w")
+
+        dll_row = tk.Frame(dll_f, bg=SURFACE2)
+        dll_row.pack(fill=tk.X, pady=(6, 0))
+
+        self.dll_var = tk.StringVar(value=self.dll_path)
+        ent = tk.Entry(
+            dll_row, textvariable=self.dll_var, bg=SURFACE2, fg=DIM,
+            insertbackground=TEXT, relief=tk.FLAT, font=("Segoe UI", 9),
+            highlightthickness=0,
         )
-        dll_row = tk.Frame(inner, bg=PANEL)
-        dll_row.pack(fill=tk.X, pady=(2, 0))
-        self.dll_entry = tk.Entry(
-            dll_row,
-            textvariable=self.dll,
-            bg="#0b0d12",
-            fg=TEXT,
-            insertbackground=TEXT,
-            relief=tk.FLAT,
-            font=("Consolas", 9),
-        )
-        self.dll_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=6)
-        tk.Button(
-            dll_row,
-            text="…",
-            command=self.browse,
-            bg="#1a2030",
-            fg=TEXT,
-            relief=tk.FLAT,
-            width=3,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(12, 0))
 
-        # Buttons
-        btns = tk.Frame(self, bg=BG)
-        btns.pack(fill=tk.X, padx=28, pady=(8, 4))
-
-        self.inject_btn = PillButton(btns, "Inject", self.do_inject, primary=True)
-        self.inject_btn.pack(fill=tk.X, pady=(0, 8))
-        self.inject_btn.bind("<Configure>", lambda e: self.inject_btn._draw(False))
-
-        row2 = tk.Frame(btns, bg=BG)
-        row2.pack(fill=tk.X)
-        self.refresh_btn = PillButton(row2, "Refresh", self.scan, primary=False)
-        self.refresh_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-        self.refresh_btn.bind("<Configure>", lambda e: self.refresh_btn._draw(False))
-        self.launch_btn = PillButton(row2, "Launch MC", self.launch_mc, primary=False)
-        self.launch_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        self.launch_btn.bind("<Configure>", lambda e: self.launch_btn._draw(False))
-
-        # Log
         tk.Label(
-            self, text="LOG", bg=BG, fg=MUTED, font=("Segoe UI", 8)
-        ).pack(anchor=tk.W, padx=28, pady=(16, 4))
-        self.log = tk.Text(
-            self,
-            height=8,
-            bg=PANEL,
-            fg=MUTED,
-            relief=tk.FLAT,
-            font=("Consolas", 9),
-            wrap=tk.WORD,
-            highlightthickness=1,
-            highlightbackground=BORDER,
+            dll_row, text="  browse  ", bg=SURFACE2, fg=ACCENT,
+            font=("Segoe UI", 9), cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+        dll_row.bind("<Button-1>", lambda e: self.browse())
+        for w in dll_row.winfo_children():
+            w.bind("<Button-1>", lambda e: self.browse())
+
+        # —— primary inject ——
+        self.btn_canvas = tk.Canvas(
+            self, height=48, bg=BG, highlightthickness=0, cursor="hand2",
         )
-        self.log.pack(fill=tk.BOTH, expand=True, padx=28, pady=(0, 24))
+        self.btn_canvas.pack(fill=tk.X, padx=32, pady=(28, 0))
+        self.btn_canvas.bind("<Button-1>", lambda e: self.do_inject())
+        self.btn_canvas.bind("<Enter>", lambda e: self._paint_btn(True))
+        self.btn_canvas.bind("<Leave>", lambda e: self._paint_btn(False))
+        self.btn_canvas.bind("<Configure>", lambda e: self._paint_btn(False))
+        self._btn_label = "Inject"
 
-        self.after(80, self.scan)
+        # secondary actions
+        sec = tk.Frame(self, bg=BG)
+        sec.pack(fill=tk.X, padx=32, pady=(12, 0))
+
+        for text, cmd in (("Launch game", self.launch_mc), ("Refresh", self.scan)):
+            b = tk.Label(
+                sec, text=text, bg=BG, fg=DIM, font=("Segoe UI", 9),
+                cursor="hand2",
+            )
+            b.pack(side=tk.LEFT, padx=(0, 20))
+            b.bind("<Button-1>", lambda e, c=cmd: c())
+            b.bind("<Enter>", lambda e, w=b: w.configure(fg=TEXT))
+            b.bind("<Leave>", lambda e, w=b: w.configure(fg=DIM))
+
+        # footer status line
+        self.foot = tk.Label(
+            self, text="", bg=BG, fg=DIM, font=("Segoe UI", 9), anchor="w",
+        )
+        self.foot.pack(fill=tk.X, padx=32, pady=(24, 28), side=tk.BOTTOM)
+
+        self.after(50, self.scan)
         self.after(100, self.poll)
-        self.after(2000, self._auto_rescan)
+        self.after(2000, self._tick)
 
-    def log_line(self, msg: str, color: str | None = None):
-        self.log.insert(tk.END, msg + "\n")
-        if color:
-            pass
-        self.log.see(tk.END)
+    def _set_dot(self, color: str):
+        self.dot.delete("all")
+        self.dot.create_oval(1, 1, 9, 9, fill=color, outline="")
+
+    def _paint_btn(self, hover: bool):
+        c = self.btn_canvas
+        c.delete("all")
+        w = max(c.winfo_width(), 200)
+        h = 48
+        fill = ACCENT2 if hover and not self._busy else ACCENT
+        if self._busy:
+            fill = SURFACE2
+        round_rect(c, 0, 0, w - 1, h - 1, 10, fill=fill, outline="")
+        fg = "#0a0a0a" if not self._busy else DIM
+        c.create_text(
+            w // 2, h // 2, text=self._btn_label,
+            fill=fg, font=("Segoe UI Semibold", 12),
+        )
+
+    def set_footer(self, msg: str, ok: bool | None = None):
+        if ok is True:
+            self.foot.configure(text=msg, fg=GOOD)
+        elif ok is False:
+            self.foot.configure(text=msg, fg=BAD)
+        else:
+            self.foot.configure(text=msg, fg=DIM)
 
     def browse(self):
-        p = filedialog.askopenfilename(filetypes=[("DLL", "*.dll"), ("All", "*.*")])
+        p = filedialog.askopenfilename(filetypes=[("DLL", "*.dll")])
         if p:
-            self.dll.set(p)
+            self.dll_var.set(p)
+            self.dll_path = p
 
     def scan(self):
         hit = find_minecraft()
         if hit:
             self.mc_pid, self.mc_name = hit
-            self.mc_label.configure(
-                text=f"{self.mc_name}  ·  PID {self.mc_pid}", fg=OK
-            )
-            self.log_line(f"Found {self.mc_name} (PID {self.mc_pid})")
+            self._set_dot(GOOD)
+            self.status_lbl.configure(text="Minecraft found", fg=TEXT)
+            self.pid_lbl.configure(text=f"PID {self.mc_pid}")
+            self.set_footer(f"Ready  ·  {self.mc_name}")
         else:
             self.mc_pid = self.mc_name = None
-            self.mc_label.configure(text="Minecraft not running", fg=ERR)
-            self.log_line("Minecraft not found — start it or press Launch MC")
+            self._set_dot(BAD)
+            self.status_lbl.configure(text="Minecraft not running", fg=TEXT)
+            self.pid_lbl.configure(text="")
+            self.set_footer("Start the game or click Launch game")
 
-        dll = self.dll.get().strip()
-        if os.path.isfile(dll):
-            self.log_line(f"DLL ready: {os.path.basename(dll)}")
-        else:
-            self.log_line("DLL missing — browse to bedrok.dll")
-
-    def _auto_rescan(self):
+    def _tick(self):
         if self.mc_pid is None:
             hit = find_minecraft()
             if hit:
                 self.mc_pid, self.mc_name = hit
-                self.mc_label.configure(
-                    text=f"{self.mc_name}  ·  PID {self.mc_pid}", fg=OK
-                )
-                self.log_line(f"Auto-detected {self.mc_name} (PID {self.mc_pid})")
-        self.after(2500, self._auto_rescan)
+                self._set_dot(GOOD)
+                self.status_lbl.configure(text="Minecraft found", fg=TEXT)
+                self.pid_lbl.configure(text=f"PID {self.mc_pid}")
+                self.set_footer(f"Ready  ·  {self.mc_name}", True)
+        self.after(2000, self._tick)
 
     def launch_mc(self):
-        self.log_line(try_launch_minecraft())
-        self.after(3000, self.scan)
+        self.set_footer(try_launch_minecraft())
+        self.after(2500, self.scan)
 
     def do_inject(self):
+        if self._busy:
+            return
         if self.mc_pid is None:
             self.scan()
         if self.mc_pid is None:
-            messagebox.showwarning("bedROK", "Start Minecraft Bedrock first.")
+            self.set_footer("Minecraft is not running", False)
             return
-        dll = self.dll.get().strip()
+        dll = self.dll_var.get().strip()
         if not dll or not os.path.isfile(dll):
-            messagebox.showwarning("bedROK", "Select a valid bedrok.dll")
+            self.set_footer("bedrok.dll not found — browse to it", False)
             return
 
-        self.inject_btn.set_enabled(False)
-        self.inject_btn.set_text("Injecting…")
+        self._busy = True
+        self._btn_label = "Injecting…"
+        self._paint_btn(False)
         pid = self.mc_pid
 
         def work():
             try:
-                # brief wait if game just launched
-                time.sleep(0.15)
-                msg = inject(pid, dll)
-                self.q.put(("ok", msg))
+                time.sleep(0.1)
+                self.q.put(("ok", inject(pid, dll)))
             except Exception as e:
                 self.q.put(("err", str(e)))
 
@@ -438,12 +409,13 @@ class App(tk.Tk):
         try:
             while True:
                 kind, payload = self.q.get_nowait()
-                self.log_line(payload)
-                self.inject_btn.set_enabled(True)
-                self.inject_btn.set_text("Inject")
+                self._busy = False
+                self._btn_label = "Inject"
+                self._paint_btn(False)
                 if kind == "ok":
-                    messagebox.showinfo("bedROK", payload)
+                    self.set_footer(payload, True)
                 else:
+                    self.set_footer(payload, False)
                     messagebox.showerror("bedROK", payload)
         except queue.Empty:
             pass
