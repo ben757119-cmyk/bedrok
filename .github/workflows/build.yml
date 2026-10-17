@@ -47,28 +47,31 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.0' }}
-          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.0' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}
+          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1.0' }}
           body: |
-            ## bedROK v1.0.0
+            ## bedROK v1.1.0
 
-            Safe Minecraft Bedrock companion (Windows x64). No PvP modules.
+            Cleaner injector UI + auto-detect Minecraft Bedrock.
 
             ### Files
-            - `bedrok_loader.exe` — injector GUI
+            - `bedrok_loader.exe` — injector (auto-finds Minecraft + DLL)
             - `bedrok.dll` — companion DLL
 
-            ### Modules
-            - Fullbright (F1)
-            - Crosshair (F2)
-            - Clock (F3)
-            - Array list (F4)
-            - Watermark (F5)
+            ### Loader
+            - Dark compact UI
+            - Auto-detects `Minecraft.Windows.exe`
+            - Auto-picks `bedrok.dll` next to the exe
+            - Launch MC button + continuous rescan
+            - One-click Inject
+
+            ### Modules (hotkeys)
+            - F1 Fullbright · F2 Crosshair · F3 Clock · F4 Array list · F5 Watermark
 
             ### Use
-            1. Start Minecraft Bedrock
-            2. Run `bedrok_loader.exe`
-            3. Select `Minecraft.Windows.exe` + `bedrok.dll` → Inject
+            1. Put `bedrok.dll` next to `bedrok_loader.exe`
+            2. Start Minecraft (or press Launch MC)
+            3. Run loader → Inject
             4. Log: `C:\Users\Public\bedrok.log`
           files: |
             dll/build/Release/bedrok.dll
