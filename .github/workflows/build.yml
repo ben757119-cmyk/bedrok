@@ -43,13 +43,38 @@ jobs:
             dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
 
-      - name: Create GitHub Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.0' }}
+          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.0.0' }}
+          body: |
+            ## bedROK v1.0.0
+
+            Safe Minecraft Bedrock companion (Windows x64). No PvP modules.
+
+            ### Files
+            - `bedrok_loader.exe` — injector GUI
+            - `bedrok.dll` — companion DLL
+
+            ### Modules
+            - Fullbright (F1)
+            - Crosshair (F2)
+            - Clock (F3)
+            - Array list (F4)
+            - Watermark (F5)
+
+            ### Use
+            1. Start Minecraft Bedrock
+            2. Run `bedrok_loader.exe`
+            3. Select `Minecraft.Windows.exe` + `bedrok.dll` → Inject
+            4. Log: `C:\Users\Public\bedrok.log`
           files: |
             dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
-          generate_release_notes: true
+          draft: false
+          prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
