@@ -47,21 +47,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.1' }}
-          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.1' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.2' }}
+          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.2' }}
           body: |
-            ## bedROK v1.3.1
+            ## bedROK v1.3.2
 
-            Better **custom server** discovery for IP notify:
-            - New GDK path: `%APPDATA%\Minecraft Bedrock\Users\...`
-            - Legacy UWP LocalState paths
-            - Parses name/ip/port from txt/json and common dump formats
+            Fixed IP notify spam — only real server hosts now.
+            Drops keybinds, color hex junk, and options noise.
 
-            Featured experiences still have no plain local IPs.
-
-            ### Files
-            - `bedrok_loader.exe`
-            - `bedrok.dll`
+            Example of what should show: `donutsmp.net:19132`
           files: |
             dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
