@@ -14,6 +14,136 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore full loader source
+        shell: bash
+        run: |
+          # Recover last good full loader (before accidental PLACEHOLDER)
+          git show 4cfa6a19a13788107927d3559415f7d4cc126111:loader/bedrok_loader.py > loader/bedrok_loader.py
+          wc -l loader/bedrok_loader.py
+
+      - name: Patch loader — embed DLL only (no browse)
+        shell: pwsh
+        run: |
+          $p = "loader/bedrok_loader.py"
+          $t = Get-Content -Raw $p
+
+          if ($t -notmatch 'import sys') {
+            $t = $t -replace 'import glob\r?\n', "import glob`nimport sys`n"
+          }
+
+          $oldDef = @'
+def default_dll_path() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    for c in (
+        os.path.join(here, "bedrok.dll"),
+        os.path.join(os.getcwd(), "bedrok.dll"),
+        os.path.join(here, "..", "dll", "build", "Release", "bedrok.dll"),
+    ):
+        p = os.path.normpath(c)
+        if os.path.isfile(p):
+            return p
+    return os.path.join(here, "bedrok.dll")
+'@
+
+          $newDef = @'
+def resource_path(name: str) -> str:
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        p = os.path.join(base, name)
+        if os.path.isfile(p):
+            return p
+    here = os.path.dirname(os.path.abspath(__file__))
+    p = os.path.join(here, name)
+    if os.path.isfile(p):
+        return p
+    return os.path.join(os.getcwd(), name)
+
+def ensure_bundled_dll() -> str:
+    import hashlib, shutil
+    src = resource_path("bedrok.dll")
+    if not os.path.isfile(src):
+        for c in (
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "bedrok.dll"),
+            os.path.join(os.getcwd(), "bedrok.dll"),
+            os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dll", "build", "Release", "bedrok.dll")),
+        ):
+            if os.path.isfile(c):
+                src = c
+                break
+        else:
+            raise FileNotFoundError("bedrok.dll missing from this build")
+    dest_dir = os.path.join(os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or ".", "bedROK")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, "bedrok.dll")
+    def _sha(path):
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    need = True
+    if os.path.isfile(dest):
+        try:
+            need = _sha(src) != _sha(dest)
+        except Exception:
+            need = True
+    if need:
+        shutil.copy2(src, dest)
+    return dest
+'@
+
+          if ($t.Contains('def default_dll_path()')) {
+            $t = $t.Replace($oldDef.Trim(), $newDef.Trim())
+          }
+
+          $t = $t.Replace(
+            'self.dll_path = default_dll_path()',
+            "try:`n            self.dll_path = ensure_bundled_dll()`n            self._dll_status = `"bundled`"`n        except Exception as e:`n            self.dll_path = `"`"`n            self._dll_status = str(e)"
+          )
+
+          $t = $t.Replace(
+            'from tkinter import filedialog, messagebox',
+            'from tkinter import messagebox'
+          )
+
+          $t = $t -replace '(?s)        dll_f = tk\.Frame\(self, bg=BG\).*?br\.bind\("<Button-1>", lambda e: self\.browse\(\)\)\r?\n',
+@'
+        dll_f = tk.Frame(self, bg=BG)
+        dll_f.pack(fill=tk.X, padx=32, pady=(14, 0))
+        tk.Label(dll_f, text="PAYLOAD", bg=BG, fg=DIM, font=("Segoe UI", 8)).pack(anchor="w")
+        dll_row = tk.Frame(dll_f, bg=SURFACE2)
+        dll_row.pack(fill=tk.X, pady=(6, 0))
+        dll_msg = (
+            "  bedrok.dll  ·  locked in this build"
+            if getattr(self, "_dll_status", "") == "bundled"
+            else "  DLL missing from build"
+        )
+        tk.Label(
+            dll_row, text=dll_msg, bg=SURFACE2,
+            fg=GOOD if getattr(self, "_dll_status", "") == "bundled" else BAD,
+            font=("Segoe UI", 9), anchor="w",
+        ).pack(fill=tk.X, ipady=10, padx=12)
+
+'@
+
+          $t = $t.Replace(
+            "dll = self.dll_var.get().strip()`r`n        if not dll or not os.path.isfile(dll):`r`n            self.set_footer(`"bedrok.dll not found — browse to it`", False)`r`n            return",
+            "try:`n            dll = ensure_bundled_dll()`n            self.dll_path = dll`n        except Exception as e:`n            self.set_footer(f`"bundled DLL error: {e}`", False)`n            return"
+          )
+
+          $t = $t.Replace(
+            "dll = self.dll_var.get().strip()`n        if not dll or not os.path.isfile(dll):`n            self.set_footer(`"bedrok.dll not found — browse to it`", False)`n            return",
+            "try:`n            dll = ensure_bundled_dll()`n            self.dll_path = dll`n        except Exception as e:`n            self.set_footer(f`"bundled DLL error: {e}`", False)`n            return"
+          )
+
+          # strip browse method if present
+          $t = [regex]::Replace($t, '(?s)\n    def browse\(self\):.*?self\.dll_path = p\n', "`n")
+
+          Set-Content -Path $p -Value $t -NoNewline
+          Write-Host "Patched loader length:" (Get-Item $p).Length
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -29,35 +159,40 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build loader exe
+      - name: Build loader exe (DLL embedded)
         working-directory: loader
+        shell: pwsh
         run: |
+          Copy-Item ..\dll\build\Release\bedrok.dll .\bedrok.dll -Force
           pip install -r requirements.txt pyinstaller
-          pyinstaller --noconfirm --onefile --windowed --name bedrok_loader bedrok_loader.py
+          pyinstaller --noconfirm --onefile --windowed --name bedrok_loader --add-data "bedrok.dll;." bedrok_loader.py
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bedrok-windows
           path: |
-            dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.2' }}
-          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.2' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.4.0' }}
+          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.4.0' }}
           body: |
-            ## bedROK v1.3.2
+            ## bedROK v1.4.0
 
-            Fixed IP notify spam — only real server hosts now.
-            Drops keybinds, color hex junk, and options noise.
+            **Single EXE** — `bedrok.dll` is built into the loader.
+            No separate DLL download, no browse path for other DLLs.
 
-            Example of what should show: `donutsmp.net:19132`
+            ### Use
+            1. Download `bedrok_loader.exe` only
+            2. Start Minecraft Bedrock
+            3. Run loader → Inject
+
+            Payload shows as **bedrok.dll · locked in this build**.
           files: |
-            dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
           draft: false
           prerelease: false
