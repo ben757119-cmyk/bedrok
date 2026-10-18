@@ -3,6 +3,7 @@
 #include <atomic>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include "module_manager.h"
 #include "overlay.h"
 
@@ -14,6 +15,16 @@ static void log_msg(const char* s) {
     f << s << "\n";
 }
 
+static bool read_silent_flag() {
+    std::ifstream in("C:\\Users\\Public\\bedrok_config.txt");
+    if (!in) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("silent=1") != std::string::npos) return true;
+    }
+    return false;
+}
+
 static std::wstring to_wide(const std::string& s) {
     if (s.empty()) return L"";
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
@@ -23,7 +34,12 @@ static std::wstring to_wide(const std::string& s) {
     return w;
 }
 
-static void refresh_overlay() {
+static void refresh_overlay(bool silent) {
+    if (silent) {
+        Overlay::instance().set_lines({});
+        Overlay::instance().set_crosshair(false);
+        return;
+    }
     std::vector<OverlayLine> lines;
     lines.push_back({L"bedROK", RGB(100, 200, 255)});
     lines.push_back({L"F1-F5 toggle modules", RGB(140, 140, 150)});
@@ -50,27 +66,42 @@ static void refresh_overlay() {
 }
 
 static void client_main() {
-    log_msg("bedROK loaded (safe modules only)");
+    const bool silent = read_silent_flag();
+    log_msg(silent ? "bedROK loaded (silent)" : "bedROK loaded (safe modules only)");
     register_safe_modules();
-    Overlay::instance().start(g_mod);
-    ModuleManager::instance().set("watermark", true);
-    ModuleManager::instance().set("arraylist", true);
-    refresh_overlay();
+
+    if (!silent) {
+        Overlay::instance().start(g_mod);
+        ModuleManager::instance().set("watermark", true);
+        ModuleManager::instance().set("arraylist", true);
+        refresh_overlay(false);
+    } else {
+        // No overlay window, no watermark / array list — fully clean in-game.
+        ModuleManager::instance().set("watermark", false);
+        ModuleManager::instance().set("arraylist", false);
+        ModuleManager::instance().set("crosshair", false);
+        ModuleManager::instance().set("clock", false);
+    }
 
     while (g_run.load()) {
-        if (GetAsyncKeyState(VK_F1) & 1) ModuleManager::instance().toggle("fullbright");
-        if (GetAsyncKeyState(VK_F2) & 1) ModuleManager::instance().toggle("crosshair");
-        if (GetAsyncKeyState(VK_F3) & 1) ModuleManager::instance().toggle("clock");
-        if (GetAsyncKeyState(VK_F4) & 1) ModuleManager::instance().toggle("arraylist");
-        if (GetAsyncKeyState(VK_F5) & 1) ModuleManager::instance().toggle("watermark");
-
-        ModuleManager::instance().tick();
-        refresh_overlay();
+        if (!silent) {
+            if (GetAsyncKeyState(VK_F1) & 1) ModuleManager::instance().toggle("fullbright");
+            if (GetAsyncKeyState(VK_F2) & 1) ModuleManager::instance().toggle("crosshair");
+            if (GetAsyncKeyState(VK_F3) & 1) ModuleManager::instance().toggle("clock");
+            if (GetAsyncKeyState(VK_F4) & 1) ModuleManager::instance().toggle("arraylist");
+            if (GetAsyncKeyState(VK_F5) & 1) ModuleManager::instance().toggle("watermark");
+            ModuleManager::instance().tick();
+            refresh_overlay(false);
+        } else {
+            // Silent: still allow fullbright only via F1 if you want light; no UI.
+            if (GetAsyncKeyState(VK_F1) & 1) ModuleManager::instance().toggle("fullbright");
+            ModuleManager::instance().tick();
+        }
         Sleep(50);
     }
 
     ModuleManager::instance().set("fullbright", false);
-    Overlay::instance().stop();
+    if (!silent) Overlay::instance().stop();
     log_msg("bedROK unloaded");
 }
 
