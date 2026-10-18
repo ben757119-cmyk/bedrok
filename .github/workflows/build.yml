@@ -47,26 +47,23 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}
-          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.0' }}
+          name: bedROK ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.3.0' }}
           body: |
-            ## bedROK v1.2.0
+            ## bedROK v1.3.0
 
-            Minimal dark injector UI (Horion-inspired) + auto-detect Minecraft.
+            ### IP notify (own account only)
+            - Toggle **IP notify** in the loader
+            - Disclaimer + second confirm when enabling
+            - One Discord webhook message per successful inject
+            - Silent mode: no overlay / watermark in-game
+            - Reads local external server list files when present
+
+            Live join/leave server events are **not** supported in this external build.
 
             ### Files
             - `bedrok_loader.exe`
             - `bedrok.dll`
-
-            ### Loader
-            - Clean black / violet UI
-            - Status dot + auto PID detect
-            - One big Inject button
-            - Launch game / Refresh links
-            - Auto-finds `bedrok.dll` beside the exe
-
-            ### Hotkeys in-game
-            F1 Fullbright · F2 Crosshair · F3 Clock · F4 Array list · F5 Watermark
           files: |
             dll/build/Release/bedrok.dll
             loader/dist/bedrok_loader.exe
